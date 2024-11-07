@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sellout Hide and Seek</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-auth-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-database-compat.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f2f5;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .auth-section {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .lobby-list, .active-lobby {
+            margin-top: 20px;
+        }
+
+        .player-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .player-card {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .player-card.dead {
+            background: #ffebee;
+        }
+
+        .player-card.seeker {
+            background: #e3f2fd;
+        }
+
+        .timer {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            margin: 10px 0;
+        }
+
+        button {
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background: #bdbdbd;
+            cursor: not-allowed;
+        }
+
+        .currency {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="currency" id="userCurrency">
+        Currency: 0
+    </div>
+
+    <div class="container">
+        <div class="auth-section" id="authSection">
+            <button onclick="signInWithGoogle()">Sign in with Google</button>
+            <button onclick="signInWithDiscord()">Sign in with Discord</button>
+        </div>
+
+        <div id="gameSection" style="display: none;">
+            <div id="lobbyList" class="lobby-list">
+                <h2>Available Lobbies</h2>
+                <button onclick="createLobby()">Create New Lobby</button>
+                <div id="lobbiesList"></div>
+            </div>
+
+            <div id="activeLobby" class="active-lobby" style="display: none;">
+                <h2>Active Lobby</h2>
+                <div class="timer" id="timer"></div>
+                <div class="player-list" id="playerList"></div>
+                <div id="hostControls" style="display: none;">
+                    <button onclick="selectSeeker()">Select Seeker</button>
+                    <button onclick="resetGame()">Reset Game</button>
+                    <button onclick="closeLobby()">Close Lobby</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Firebase configuration - You'll need to replace these with your own
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_AUTH_DOMAIN",
+            projectId: "YOUR_PROJECT_ID",
+            databaseURL: "YOUR_DATABASE_URL",
+            storageBucket: "YOUR_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const database = firebase.database();
+
+        let currentUser = null;
+        let currentLobby = null;
+        let isHost = false;
+        let timer = null;
+
+        // Authentication functions
+        function signInWithGoogle() {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            auth.signInWithPopup(provider);
+        }
+
+        function signInWithDiscord() {
+            const provider = new firebase.auth.OAuthProvider('discord');
+            auth.signInWithPopup(provider);
+        }
+
+        // Listen for auth state changes
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                currentUser = user;
+                document.getElementById('authSection').style.display = 'none';
+                document.getElementById('gameSection').style.display = 'block';
+                loadUserCurrency();
+                loadLobbies();
+            } else {
+                document.getElementById('authSection').style.display = 'block';
+                document.getElementById('gameSection').style.display = 'none';
+            }
+        });
+
+        // Lobby management
+        function createLobby() {
+            const lobbyRef = database.ref('lobbies').push();
+            const lobby = {
+                host: currentUser.uid,
+                players: {
+                    [currentUser.uid]: {
+                        name: currentUser.displayName,
+                        status: 'alive'
+                    }
+                },
+                active: true,
+                seeker: null
+            };
+            
+            lobbyRef.set(lobby);
+            joinLobby(lobbyRef.key);
+        }
+
+        function joinLobby(lobbyId) {
+            currentLobby = lobbyId;
+            isHost = false;
+            
+            const lobbyRef = database.ref(`lobbies/${lobbyId}`);
+            lobbyRef.once('value', (snapshot) => {
+                const lobby = snapshot.val();
+                if (lobby.host === currentUser.uid) {
+                    isHost = true;
+                    document.getElementById('hostControls').style.display = 'block';
+                }
+            });
+
+            database.ref(`lobbies/${lobbyId}/players/${currentUser.uid}`).set({
+                name: currentUser.displayName,
+                status: 'alive'
+            });
+
+            document.getElementById('lobbyList').style.display = 'none';
+            document.getElementById('activeLobby').style.display = 'block';
+            
+            // Listen for lobby updates
+            lobbyRef.on('value', updateLobbyDisplay);
+        }
+
+        function updateLobbyDisplay(snapshot) {
+            const lobby = snapshot.val();
+            const playerList = document.getElementById('playerList');
+            playerList.innerHTML = '';
+
+            Object.entries(lobby.players).forEach(([uid, player]) => {
+                const playerCard = document.createElement('div');
+                playerCard.className = `player-card ${player.status}`;
+                
+                const playerName = document.createElement('span');
+                playerName.textContent = player.name;
+                
+                const playerStatus = document.createElement('span');
+                playerStatus.textContent = player.status;
+
+                if (isHost) {
+                    playerCard.onclick = () => markPlayerFound(uid);
+                }
+
+                playerCard.appendChild(playerName);
+                playerCard.appendChild(playerStatus);
+                playerList.appendChild(playerCard);
+            });
+        }
+
+        // Game mechanics
+        function markPlayerFound(playerId) {
+            if (!isHost) return;
+
+            const timerDisplay = document.getElementById('timer');
+            let timeLeft = 50;
+
+            clearInterval(timer);
+            timer = setInterval(() => {
+                timeLeft--;
+                timerDisplay.textContent = `Time left: ${timeLeft}s`;
+
+                if (timeLeft <= 0) {
+                    clearInterval(timer);
+                    timerDisplay.textContent = '';
+                    killPlayer(playerId);
+                }
+            }, 1000);
+
+            // Add buttons for spending currency
+            const spareButton = document.createElement('button');
+            spareButton.textContent = 'Spare (50 points)';
+            spareButton.onclick = () => sparePlayer(playerId);
+
+            const killButton = document.createElement('button');
+            killButton.textContent = 'Kill (50 points)';
+            killButton.onclick = () => killPlayer(playerId);
+
+            timerDisplay.appendChild(spareButton);
+            timerDisplay.appendChild(killButton);
+        }
+
+        function sparePlayer(playerId) {
+            if (currentUser.currency >= 50) {
+                updateCurrency(-50);
+                clearInterval(timer);
+                document.getElementById('timer').textContent = '';
+            }
+        }
+
+        function killPlayer(playerId) {
+            database.ref(`lobbies/${currentLobby}/players/${playerId}/status`).set('dead');
+            
+            // Give seeker points
+            const seekerRef = database.ref(`lobbies/${currentLobby}/seeker`);
+            seekerRef.once('value', (snapshot) => {
+                const seekerId = snapshot.val();
+                if (seekerId) {
+                    updateCurrency(10, seekerId);
+                }
+            });
+        }
+
+        // Currency management
+        function loadUserCurrency() {
+            database.ref(`users/${currentUser.uid}/currency`).on('value', (snapshot) => {
+                const currency = snapshot.val() || 0;
+                document.getElementById('userCurrency').textContent = `Currency: ${currency}`;
+            });
+        }
+
+        function updateCurrency(amount, userId = currentUser.uid) {
+            const userRef = database.ref(`users/${userId}/currency`);
+            userRef.transaction(current => (current || 0) + amount);
+        }
+
+        // Utility functions
+        function resetGame() {
+            if (!isHost) return;
+            
+            database.ref(`lobbies/${currentLobby}/players`).once('value', (snapshot) => {
+                const updates = {};
+                snapshot.forEach(player => {
+                    updates[`${player.key}/status`] = 'alive';
+                });
+                database.ref(`lobbies/${currentLobby}/players`).update(updates);
+            });
+            
+            database.ref(`lobbies/${currentLobby}/seeker`).set(null);
+        }
+
+        function closeLobby() {
+            if (!isHost) return;
+            
+            database.ref(`lobbies/${currentLobby}`).update({
+                active: false
+            });
+            
+            document.getElementById('activeLobby').style.display = 'none';
+            document.getElementById('lobbyList').style.display = 'block';
+            currentLobby = null;
+        }
+
+        // Load initial lobbies
+        function loadLobbies() {
+            const lobbiesRef = database.ref('lobbies');
+            lobbiesRef.on('value', (snapshot) => {
+                const lobbiesList = document.getElementById('lobbiesList');
+                lobbiesList.innerHTML = '';
+
+                snapshot.forEach(lobby => {
+                    const lobbyData = lobby.val();
+                    if (lobbyData.active) {
+                        const lobbyElement = document.createElement('div');
+                        lobbyElement.className = 'lobby-card';
+                        lobbyElement.textContent = `Lobby (${Object.keys(lobbyData.players).length} players)`;
+                        lobbyElement.onclick = () => joinLobby(lobby.key);
+                        lobbiesList.appendChild(lobbyElement);
+                    }
+                });
+            });
+        }
+    </script>
+</body>
+</html>
