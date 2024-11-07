@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sellout Hide and Seek</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-app-compat.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-auth-compat.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-database-compat.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -70,6 +67,7 @@
             padding: 8px 16px;
             border-radius: 4px;
             cursor: pointer;
+            margin: 5px;
         }
 
         button:disabled {
@@ -85,6 +83,18 @@
             padding: 10px;
             border-radius: 4px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .lobby-card {
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .lobby-card:hover {
+            background: #f5f5f5;
         }
     </style>
 </head>
@@ -119,56 +129,61 @@
         </div>
     </div>
 
-    <script>
-        // Firebase configuration - You'll need to replace these with your own
+    <script type="module">
+        import { initializeApp } from 'https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-app.js';
+        import { 
+            getAuth, 
+            signInWithPopup, 
+            GoogleAuthProvider,
+            OAuthProvider,
+            onAuthStateChanged 
+        } from 'https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-auth.js';
+        import { 
+            getDatabase, 
+            ref, 
+            set, 
+            push,
+            onValue,
+            get,
+            update,
+            runTransaction 
+        } from 'https://cdnjs.cloudflare.com/ajax/libs/firebase/10.8.0/firebase-database.js';
+
+        // Your Firebase configuration
         const firebaseConfig = {
             apiKey: "AIzaSyDANWlCwcpNwGgnfSxfYDQclpaLCJ4TG0o",
             authDomain: "sellout-hide-and-seek.firebaseapp.com",
             projectId: "sellout-hide-and-seek",
-            databaseURL: "https://sellout-hide-and-seek-default-rtdb.firebaseio.com",
             storageBucket: "sellout-hide-and-seek.firebasestorage.app",
             messagingSenderId: "891968120188",
-            appId: "1:891968120188:web:febd4b64f73748885cf0f9"
+            appId: "1:891968120188:web:febd4b64f73748885cf0f9",
+            measurementId: "G-8Z2BFZMWJW",
+            databaseURL: "https://sellout-hide-and-seek-default-rtdb.firebaseio.com"
         };
 
         // Initialize Firebase
-        firebase.initializeApp(firebaseConfig);
-        const auth = firebase.auth();
-        const database = firebase.database();
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const database = getDatabase(app);
 
         let currentUser = null;
         let currentLobby = null;
         let isHost = false;
         let timer = null;
 
-        // Authentication functions
-        function signInWithGoogle() {
-            const provider = new firebase.auth.GoogleAuthProvider();
-            auth.signInWithPopup(provider);
-        }
+        // Make functions available globally
+        window.signInWithGoogle = () => {
+            const provider = new GoogleAuthProvider();
+            signInWithPopup(auth, provider);
+        };
 
-        function signInWithDiscord() {
-            const provider = new firebase.auth.OAuthProvider('discord');
-            auth.signInWithPopup(provider);
-        }
+        window.signInWithDiscord = () => {
+            const provider = new OAuthProvider('discord');
+            signInWithPopup(auth, provider);
+        };
 
-        // Listen for auth state changes
-        auth.onAuthStateChanged((user) => {
-            if (user) {
-                currentUser = user;
-                document.getElementById('authSection').style.display = 'none';
-                document.getElementById('gameSection').style.display = 'block';
-                loadUserCurrency();
-                loadLobbies();
-            } else {
-                document.getElementById('authSection').style.display = 'block';
-                document.getElementById('gameSection').style.display = 'none';
-            }
-        });
-
-        // Lobby management
-        function createLobby() {
-            const lobbyRef = database.ref('lobbies').push();
+        window.createLobby = async () => {
+            const lobbyRef = push(ref(database, 'lobbies'));
             const lobby = {
                 host: currentUser.uid,
                 players: {
@@ -181,24 +196,24 @@
                 seeker: null
             };
             
-            lobbyRef.set(lobby);
+            await set(lobbyRef, lobby);
             joinLobby(lobbyRef.key);
-        }
+        };
 
-        function joinLobby(lobbyId) {
+        window.joinLobby = async (lobbyId) => {
             currentLobby = lobbyId;
             isHost = false;
             
-            const lobbyRef = database.ref(`lobbies/${lobbyId}`);
-            lobbyRef.once('value', (snapshot) => {
-                const lobby = snapshot.val();
-                if (lobby.host === currentUser.uid) {
-                    isHost = true;
-                    document.getElementById('hostControls').style.display = 'block';
-                }
-            });
+            const lobbyRef = ref(database, `lobbies/${lobbyId}`);
+            const snapshot = await get(lobbyRef);
+            const lobby = snapshot.val();
+            
+            if (lobby.host === currentUser.uid) {
+                isHost = true;
+                document.getElementById('hostControls').style.display = 'block';
+            }
 
-            database.ref(`lobbies/${lobbyId}/players/${currentUser.uid}`).set({
+            await set(ref(database, `lobbies/${lobbyId}/players/${currentUser.uid}`), {
                 name: currentUser.displayName,
                 status: 'alive'
             });
@@ -207,7 +222,151 @@
             document.getElementById('activeLobby').style.display = 'block';
             
             // Listen for lobby updates
-            lobbyRef.on('value', updateLobbyDisplay);
+            onValue(lobbyRef, updateLobbyDisplay);
+        };
+
+        window.resetGame = async () => {
+            if (!isHost) return;
+            
+            const playersRef = ref(database, `lobbies/${currentLobby}/players`);
+            const snapshot = await get(playersRef);
+            const updates = {};
+            
+            snapshot.forEach(player => {
+                updates[`${player.key}/status`] = 'alive';
+            });
+            
+            await update(ref(database, `lobbies/${currentLobby}/players`), updates);
+            await set(ref(database, `lobbies/${currentLobby}/seeker`), null);
+        };
+
+        window.closeLobby = async () => {
+            if (!isHost) return;
+            
+            await update(ref(database, `lobbies/${currentLobby}`), {
+                active: false
+            });
+            
+            document.getElementById('activeLobby').style.display = 'none';
+            document.getElementById('lobbyList').style.display = 'block';
+            currentLobby = null;
+        };
+
+        async function sparePlayer(playerId) {
+            const timerRef = ref(database, `lobbies/${currentLobby}/currentTimer`);
+            const userRef = ref(database, `users/${currentUser.uid}/currency`);
+            
+            try {
+                await runTransaction(timerRef, (currentTimer) => {
+                    if (currentTimer === null || currentTimer.status !== 'active') {
+                        return;
+                    }
+                    return {
+                        ...currentTimer,
+                        status: 'spared',
+                        sparedBy: currentUser.uid
+                    };
+                });
+
+                await runTransaction(userRef, (currentCurrency) => {
+                    if (currentCurrency >= 50) {
+                        return currentCurrency - 50;
+                    }
+                    return currentCurrency;
+                });
+
+                clearInterval(timer);
+                document.getElementById('timer').textContent = '';
+                
+                await push(ref(database, `lobbies/${currentLobby}/messages`), {
+                    type: 'spare',
+                    message: `${currentUser.displayName} spared ${playerId}`,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.error('Error sparing player:', error);
+            }
+        }
+
+        async function killPlayer(playerId) {
+            const timerRef = ref(database, `lobbies/${currentLobby}/currentTimer`);
+            const userRef = ref(database, `users/${currentUser.uid}/currency`);
+            
+            try {
+                await runTransaction(timerRef, (currentTimer) => {
+                    if (currentTimer === null || currentTimer.status !== 'active') {
+                        return;
+                    }
+                    return {
+                        ...currentTimer,
+                        status: 'killed',
+                        killedBy: currentUser.uid
+                    };
+                });
+
+                await runTransaction(userRef, (currentCurrency) => {
+                    if (currentCurrency >= 50) {
+                        return currentCurrency - 50;
+                    }
+                    return currentCurrency;
+                });
+
+                await set(ref(database, `lobbies/${currentLobby}/players/${playerId}/status`), 'dead');
+                
+                const seekerSnapshot = await get(ref(database, `lobbies/${currentLobby}/seeker`));
+                const seekerId = seekerSnapshot.val();
+                if (seekerId) {
+                    updateCurrency(10, seekerId);
+                }
+
+                clearInterval(timer);
+                document.getElementById('timer').textContent = '';
+                
+                await push(ref(database, `lobbies/${currentLobby}/messages`), {
+                    type: 'kill',
+                    message: `${currentUser.displayName} killed ${playerId}`,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.error('Error killing player:', error);
+            }
+        }
+
+        async function markPlayerFound(playerId) {
+            if (!isHost) return;
+
+            await set(ref(database, `lobbies/${currentLobby}/currentTimer`), {
+                playerId: playerId,
+                startTime: Date.now(),
+                status: 'active',
+                duration: 50
+            });
+
+            const timerDisplay = document.getElementById('timer');
+            let timeLeft = 50;
+
+            clearInterval(timer);
+            timer = setInterval(() => {
+                timeLeft--;
+                timerDisplay.textContent = `Time left: ${timeLeft}s`;
+
+                if (timeLeft <= 0) {
+                    clearInterval(timer);
+                    timerDisplay.textContent = '';
+                    killPlayer(playerId);
+                }
+            }, 1000);
+
+            const spareButton = document.createElement('button');
+            spareButton.textContent = 'Spare (50 points)';
+            spareButton.onclick = () => sparePlayer(playerId);
+
+            const killButton = document.createElement('button');
+            killButton.textContent = 'Kill (50 points)';
+            killButton.onclick = () => killPlayer(playerId);
+
+            timerDisplay.appendChild(spareButton);
+            timerDisplay.appendChild(killButton);
         }
 
         function updateLobbyDisplay(snapshot) {
@@ -235,103 +394,22 @@
             });
         }
 
-        // Game mechanics
-        function markPlayerFound(playerId) {
-            if (!isHost) return;
-
-            const timerDisplay = document.getElementById('timer');
-            let timeLeft = 50;
-
-            clearInterval(timer);
-            timer = setInterval(() => {
-                timeLeft--;
-                timerDisplay.textContent = `Time left: ${timeLeft}s`;
-
-                if (timeLeft <= 0) {
-                    clearInterval(timer);
-                    timerDisplay.textContent = '';
-                    killPlayer(playerId);
-                }
-            }, 1000);
-
-            // Add buttons for spending currency
-            const spareButton = document.createElement('button');
-            spareButton.textContent = 'Spare (50 points)';
-            spareButton.onclick = () => sparePlayer(playerId);
-
-            const killButton = document.createElement('button');
-            killButton.textContent = 'Kill (50 points)';
-            killButton.onclick = () => killPlayer(playerId);
-
-            timerDisplay.appendChild(spareButton);
-            timerDisplay.appendChild(killButton);
+        async function updateCurrency(amount, userId = currentUser.uid) {
+            const userRef = ref(database, `users/${userId}/currency`);
+            await runTransaction(userRef, (current) => (current || 0) + amount);
         }
 
-        function sparePlayer(playerId) {
-            if (currentUser.currency >= 50) {
-                updateCurrency(-50);
-                clearInterval(timer);
-                document.getElementById('timer').textContent = '';
-            }
-        }
-
-        function killPlayer(playerId) {
-            database.ref(`lobbies/${currentLobby}/players/${playerId}/status`).set('dead');
-            
-            // Give seeker points
-            const seekerRef = database.ref(`lobbies/${currentLobby}/seeker`);
-            seekerRef.once('value', (snapshot) => {
-                const seekerId = snapshot.val();
-                if (seekerId) {
-                    updateCurrency(10, seekerId);
-                }
-            });
-        }
-
-        // Currency management
         function loadUserCurrency() {
-            database.ref(`users/${currentUser.uid}/currency`).on('value', (snapshot) => {
+            const userRef = ref(database, `users/${currentUser.uid}/currency`);
+            onValue(userRef, (snapshot) => {
                 const currency = snapshot.val() || 0;
                 document.getElementById('userCurrency').textContent = `Currency: ${currency}`;
             });
         }
 
-        function updateCurrency(amount, userId = currentUser.uid) {
-            const userRef = database.ref(`users/${userId}/currency`);
-            userRef.transaction(current => (current || 0) + amount);
-        }
-
-        // Utility functions
-        function resetGame() {
-            if (!isHost) return;
-            
-            database.ref(`lobbies/${currentLobby}/players`).once('value', (snapshot) => {
-                const updates = {};
-                snapshot.forEach(player => {
-                    updates[`${player.key}/status`] = 'alive';
-                });
-                database.ref(`lobbies/${currentLobby}/players`).update(updates);
-            });
-            
-            database.ref(`lobbies/${currentLobby}/seeker`).set(null);
-        }
-
-        function closeLobby() {
-            if (!isHost) return;
-            
-            database.ref(`lobbies/${currentLobby}`).update({
-                active: false
-            });
-            
-            document.getElementById('activeLobby').style.display = 'none';
-            document.getElementById('lobbyList').style.display = 'block';
-            currentLobby = null;
-        }
-
-        // Load initial lobbies
         function loadLobbies() {
-            const lobbiesRef = database.ref('lobbies');
-            lobbiesRef.on('value', (snapshot) => {
+            const lobbiesRef = ref(database, 'lobbies');
+            onValue(lobbiesRef, (snapshot) => {
                 const lobbiesList = document.getElementById('lobbiesList');
                 lobbiesList.innerHTML = '';
 
@@ -341,12 +419,26 @@
                         const lobbyElement = document.createElement('div');
                         lobbyElement.className = 'lobby-card';
                         lobbyElement.textContent = `Lobby (${Object.keys(lobbyData.players).length} players)`;
-                        lobbyElement.onclick = () => joinLobby(lobby.key);
+                        lobbyElement.onclick = () => window.joinLobby(lobby.key);
                         lobbiesList.appendChild(lobbyElement);
                     }
                 });
             });
         }
+
+        // Listen for auth state changes
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                document.getElementById('authSection').style.display = 'none';
+                document.getElementById('gameSection').style.display = 'block';
+                loadUserCurrency();
+                loadLobbies();
+            } else {
+                document.getElementById('authSection').style.display = 'block';
+                document.getElementById('gameSection').style.display = 'none';
+            }
+        });
     </script>
 </body>
 </html>
